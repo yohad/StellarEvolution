@@ -23,8 +23,8 @@ def density(M, R):
     return M / (4 / 3 * np.pi * R**3)
 
 
-def thermal_pressure(rho, T):
-    result = rho * k_B * T / mu_thermal
+def thermal_pressure(rho, T, X):
+    result = (1 / 2 + 3 * X / 2) * rho * k_B * T / m_p
     return result
 
 
@@ -46,7 +46,7 @@ def degeneracy_pressure(rho):
 
 def total_pressure(X, rho, T):
     return (
-        thermal_pressure(rho, T)
+        thermal_pressure(rho, T, X)
         + radiation_pressure(T)
         + degeneracy_pressure(rho)
     )
@@ -89,7 +89,18 @@ def epsilon(rho, T, X):
 
 
 def simulation(
-    t, y, M, t_arr, R_arr, X_arr, rho_arr, T_arr, L_arr, eps_arr, pbar
+    t,
+    y,
+    M,
+    t_arr,
+    R_arr,
+    X_arr,
+    rho_arr,
+    T_arr,
+    L_arr,
+    eps_arr,
+    T_eff_arr,
+    pbar,
 ):
     R, X = y
 
@@ -110,6 +121,10 @@ def simulation(
 
     L = luminosity(T, R, rho, X)
     L_arr.append(L.to("Lsun").value)
+
+    kappa = opacity(X)
+    T_eff = T / (4 * np.pi * kappa * rho * R) ** (1 / 4)
+    T_eff_arr.append(T_eff.to("K").value)
 
     eps = epsilon(rho, T, X)
     eps_arr.append(eps.to("cm2 / s3").value)
@@ -139,6 +154,7 @@ def main(mass, output):
     T_arr = []
     L_arr = []
     eps_arr = []
+    T_eff_arr = []
 
     t_max = 6e8
     with tqdm(total=t_max) as pbar:
@@ -155,6 +171,7 @@ def main(mass, output):
                 T_arr,
                 L_arr,
                 eps_arr,
+                T_eff_arr,
                 pbar,
             ],
             first_step=10,
@@ -169,6 +186,7 @@ def main(mass, output):
         {
             "t": t_arr,
             "T": T_arr,
+            "T_eff": T_eff_arr,
             "L": L_arr,
             "rho": rho_arr,
             "R": R_arr,
