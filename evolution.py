@@ -1,16 +1,18 @@
-# %%
+import astropy.units as u
+import click
 import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+from astropy.constants import G, c, e, hbar, k_B, m_e, m_p, sigma_sb
 from scipy.integrate import solve_ivp
 from scipy.optimize import root_scalar
-import astropy.units as u
-from astropy.constants import G, k_B, sigma_sb, m_e, m_p, c, hbar, e
-import plotly.graph_objects as go
+from pathlib import Path
+from tqdm import tqdm
 
 e = e.esu
 
 mu_thermal = m_p / 2
 a = 4 * sigma_sb / c
-# %%
 
 
 def opacity(X):
@@ -33,13 +35,21 @@ def radiation_pressure(T):
 
 def degeneracy_pressure(rho):
     result = (
-        (2 * np.pi**2) ** (2 / 3) * hbar**2 / 5 / m_e * (rho / mu_thermal) ** (5 / 3)
+        (2 * np.pi**2) ** (2 / 3)
+        * hbar**2
+        / 5
+        / m_e
+        * (rho / mu_thermal) ** (5 / 3)
     )
     return result
 
 
 def total_pressure(X, rho, T):
-    return thermal_pressure(rho, T) + radiation_pressure(T) + degeneracy_pressure(rho)
+    return (
+        thermal_pressure(rho, T)
+        + radiation_pressure(T)
+        + degeneracy_pressure(rho)
+    )
 
 
 def calculate_temperature(X, rho, R, M):
@@ -60,7 +70,9 @@ def luminosity(T, R, rho, X):
 
 def epsilon(rho, T):
     WEAK = 1e-24
-    E0 = ((mu_thermal / 2) ** (1 / 2) * np.pi * e**2 * k_B * T / hbar) ** (2 / 3)
+    E0 = ((mu_thermal / 2) ** (1 / 2) * np.pi * e**2 * k_B * T / hbar) ** (
+        2 / 3
+    )
     sigmav = (
         WEAK
         * 4
@@ -91,87 +103,47 @@ def simulation(t, y, M):
     return diff
 
 
-# %%
-masses = [0.01, 0.5, 1, 30]
-results = []
-for M in masses:
-    print(f"Calculating for {M} [M_sun]")
-    results.append(
-        solve_ivp(simulation, [0.1, 6e8], y0=[10000 * M, 1], args=[M], first_step=10)
+@click.command()
+@click.option(
+    "--mass", default=1, help="Mass of the Star in [Msun]", type=click.FLOAT
+)
+@click.option(
+    "--output",
+    default="output",
+    type=click.Path(exists=True),
+    help="Mass of the Star in [Msun]",
+)
+def main(mass, output):
+    # Calculations
+    print("Integrating in time...")
+    result = solve_ivp(
+        simulation,
+        [0.1, 6e8],
+        y0=[100 * mass, 1],
+        args=[mass],
+        first_step=10,
+        dense_output=True,
     )
-
-# %%
-luminosities = []
-temperatures = []
-T_eff = []
-for sim, M in zip(results, masses):
-    print(f"M = {M} [Msun]")
-    M *= u.Msun
-    t = sim.t * u.yr
-    R, X = sim.y
+    R, X = result.y
     R *= u.Rsun
-    rho = density(1 * u.Msun, R)
 
-    T = np.zeros_like(X) * u.K
+    # Get other quantities
+    M = mass * u.Msun
     L = np.zeros_like(X) * u.Lsun
-    kappa = np.zeros_like(X) * u.cm**2 / u.g
-    for i in range(len(X)):
+    T = np.zeros_like(X) * u.K
+    rho = np.zeros_like(X) * u.g / u.cm**3
+    print("Calculating other quantities...")
+    for i, _ in tqdm(enumerate(R)):
+        rho[i] = density(M, R[i])
         T[i] = calculate_temperature(X[i], rho[i], R[i], M)
         L[i] = luminosity(T[i], R[i], rho[i], X[i])
-        kappa[i] = opacity(X[i])
 
-    temperatures.append(T)
-    luminosities.append(L)
-    l = 1 / 3 / kappa / rho
-    tau = R / l
-    T_eff.append((T / tau ** (1 / 4)).cgs)
+    # Save data
+    output = Path(output)
+    output_path = output / f"M{mass}.csv"
+    df = pd.DataFrame({"T": T, "L": L, "rho": rho, "R": R, "X": X})
+    df.to_csv(output_path, index=False)
 
-# %%
-fig = go.Figure()
 
-for i in range(len(masses)):
-    fig.add_trace(
-        go.Scatter(x=T_eff[i], y=luminosities[i], name=f"M = {masses[i]} [Msun]")
-    )
-
-fig.update_xaxes(type="log", autorange="reversed", title="T_eff [K]")
-fig.update_yaxes(type="log", title="L [Lsun]")
-fig.update_layout(title=dict(text="Stellar Evolution"))
-fig.show()
-
-# %%
-fig = go.Figure()
-
-for i in range(len(masses)):
-    fig.add_trace(
-        go.Scatter(x=results[i].t, y=T_eff[i], name=f"M = {masses[i]} [Msun]")
-    )
-fig.update_xaxes(type="log", title="t [yr]")
-fig.update_yaxes(type="log", title="T [K]")
-fig.update_layout(title=dict(text="T_eff(t)"))
-
-fig.show()
-# %%
-fig = go.Figure()
-
-for i in range(len(masses)):
-    fig.add_trace(
-        go.Scatter(x=results[i].t, y=results[i].y[0], name=f"M = {masses[i]} [Msun]")
-    )
-fig.update_xaxes(type="log", title="t [yr]")
-fig.update_yaxes(type="log", title="R [Rsun]")
-fig.update_layout(title=dict(text="R(t)"))
-
-fig.show()
-# %%
-fig = go.Figure()
-
-for i in range(len(masses)):
-    fig.add_trace(
-        go.Scatter(x=results[i].t, y=luminosities[i], name=f"M = {masses[i]} [Msun]")
-    )
-fig.update_xaxes(type="log", title="t [yr]")
-fig.update_yaxes(type="log", title="L [Lsun]")
-fig.update_layout(title=dict(text="L(t)"))
-
-fig.show()
+if __name__ == "__main__":
+    main()
