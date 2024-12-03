@@ -68,7 +68,7 @@ def luminosity(T, R, rho, X):
     return result
 
 
-def epsilon(rho, T):
+def epsilon(rho, T, X):
     WEAK = 1e-24
     E0 = ((mu_thermal / 2) ** (1 / 2) * np.pi * e**2 * k_B * T / hbar) ** (
         2 / 3
@@ -83,20 +83,37 @@ def epsilon(rho, T):
         * u.fm**2
     )
 
-    n_H = rho / mu_thermal
+    n_H = rho * X / mu_thermal
     result = n_H * sigmav * u.MeV / m_p
     return result.cgs
 
 
-def simulation(t, y, M):
+def simulation(
+    t, y, M, t_arr, R_arr, X_arr, rho_arr, T_arr, L_arr, eps_arr, pbar
+):
     R, X = y
+
+    if len(t_arr) > 0:
+        pbar.update(t - t_arr[-1])
+    t_arr.append(t)
+    R_arr.append(R)
+    X_arr.append(X)
+
     R *= u.Rsun
     M *= u.Msun
 
     rho = density(M, R)
+    rho_arr.append(rho.to("g/cm3").value)
+
     T = calculate_temperature(X, rho, R, M)
+    T_arr.append(T.value)
+
     L = luminosity(T, R, rho, X)
-    eps = epsilon(rho, T)
+    L_arr.append(L.to("Lsun").value)
+
+    eps = epsilon(rho, T, X)
+    eps_arr.append(eps.to("cm2 / s3").value)
+
     dR = R**2 / G / M**2 * (M * eps - L)
     dX = -eps * 4 * m_p / (2.5 * u.MeV)
     diff = [dR.to("Rsun / yr").value, dX.to("1/yr").value]
@@ -115,33 +132,49 @@ def simulation(t, y, M):
 )
 def main(mass, output):
     # Calculations
-    print("Integrating in time...")
-    result = solve_ivp(
-        simulation,
-        [0.1, 6e8],
-        y0=[100 * mass, 1],
-        args=[mass],
-        first_step=10,
-        dense_output=True,
-    )
+    t_arr = []
+    R_arr = []
+    X_arr = []
+    rho_arr = []
+    T_arr = []
+    L_arr = []
+    eps_arr = []
+
+    t_max = 6e8
+    with tqdm(total=t_max) as pbar:
+        result = solve_ivp(
+            simulation,
+            [0.1, t_max],
+            y0=[100 * mass, 1],
+            args=[
+                mass,
+                t_arr,
+                R_arr,
+                X_arr,
+                rho_arr,
+                T_arr,
+                L_arr,
+                eps_arr,
+                pbar,
+            ],
+            first_step=10,
+        )
     R, X = result.y
     R *= u.Rsun
-
-    # Get other quantities
-    M = mass * u.Msun
-    L = np.zeros_like(X) * u.Lsun
-    T = np.zeros_like(X) * u.K
-    rho = np.zeros_like(X) * u.g / u.cm**3
-    print("Calculating other quantities...")
-    for i, _ in tqdm(enumerate(R)):
-        rho[i] = density(M, R[i])
-        T[i] = calculate_temperature(X[i], rho[i], R[i], M)
-        L[i] = luminosity(T[i], R[i], rho[i], X[i])
 
     # Save data
     output = Path(output)
     output_path = output / f"M{mass}.csv"
-    df = pd.DataFrame({"T": T, "L": L, "rho": rho, "R": R, "X": X})
+    df = pd.DataFrame(
+        {
+            "t": t_arr,
+            "T": T_arr,
+            "L": L_arr,
+            "rho": rho_arr,
+            "R": R_arr,
+            "X": X_arr,
+        }
+    )
     df.to_csv(output_path, index=False)
 
 
