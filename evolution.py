@@ -2,7 +2,6 @@ import astropy.units as u
 import click
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 from astropy.constants import G, c, e, hbar, k_B, m_e, m_p, sigma_sb
 from scipy.integrate import solve_ivp
 from scipy.optimize import root_scalar
@@ -13,10 +12,25 @@ e = e.esu
 
 mu_thermal = m_p / 2
 a = 4 * sigma_sb / c
+Z = 0.02  # Assume constant heavy elements fraction
 
 
-def opacity(X):
-    return 0.2 * (1 + X) * u.cm**2 / u.g
+def opacity(X, rho, T):
+    Y = 1 - X - Z
+    k_T = 0.4 * u.cm**2 / u.g
+    k_bf = (4e25 * Z * (1 + X) * rho * T ** (-3.5)).cgs.value * u.cm**2 / u.g
+    k_ff = (
+        (4e22 * (X + Y) * (1 + X) * rho * T ** (-3.5)).cgs.value * u.cm**2 / u.g
+    )
+    k_H = (
+        (1.3e-29 * Z * (1 + X) * rho ** (1 / 2) * T**9).cgs.value
+        * u.cm**2
+        / u.g
+    )
+    k_thomson = 0.2 * (1 + X) * u.cm**2 / u.g
+    k_H = 0 * u.cm**2 / u.g  # ignoring for now because its so large
+    k_total = k_T + k_bf + k_ff + k_H + k_thomson
+    return k_total
 
 
 def density(M, R):
@@ -63,12 +77,12 @@ def calculate_temperature(X, rho, R, M):
 
 
 def luminosity(T, R, rho, X):
-    kappa = opacity(X)
+    kappa = opacity(X, rho, T)
     result = sigma_sb * T**4 * R / (kappa * rho)
     return result
 
 
-def epsilon(rho, T, X):
+def epsilon_PP(rho, T, X):
     WEAK = 1e-24
     E0 = ((mu_thermal / 2) ** (1 / 2) * np.pi * e**2 * k_B * T / hbar) ** (
         2 / 3
@@ -88,6 +102,33 @@ def epsilon(rho, T, X):
     return result.cgs
 
 
+def epsilon_CNO(rho, T, X):
+    EM = 1e-7
+    mu_thermal = 14 * m_p
+    E0 = ((mu_thermal / 2) ** (1 / 2) * np.pi * e**2 * k_B * T / hbar) ** (
+        2 / 3
+    )
+    sigmav = (
+        EM
+        * 4
+        * E0
+        * np.exp(-3 * E0 / (k_B * T))
+        * np.sqrt(2 / 3 * k_B * T * E0)
+        / (np.sqrt(np.pi * mu_thermal * (k_B * T) ** 3))
+        * u.fm**2
+    )
+
+    n_Z = rho * Z / mu_thermal
+    result = n_Z * sigmav * u.MeV / m_p
+    return result.cgs
+
+
+def epsilon(rho, T, X):
+    PP = epsilon_PP(rho, T, X)
+    CNO = epsilon_CNO(rho, T, X)
+    return PP + CNO
+
+
 def simulation(
     t,
     y,
@@ -103,9 +144,11 @@ def simulation(
     pbar,
 ):
     R, X = y
+    X = max(X, 0)  # Need to make sure X is nonnegative
 
     if len(t_arr) > 0:
         pbar.update(t - t_arr[-1])
+
     t_arr.append(t)
     R_arr.append(R)
     X_arr.append(X)
@@ -122,7 +165,7 @@ def simulation(
     L = luminosity(T, R, rho, X)
     L_arr.append(L.to("Lsun").value)
 
-    kappa = opacity(X)
+    kappa = opacity(X, rho, T)
     T_eff = T / (4 * np.pi * kappa * rho * R) ** (1 / 4)
     T_eff_arr.append(T_eff.to("K").value)
 
@@ -145,7 +188,13 @@ def simulation(
     type=click.Path(exists=True),
     help="Mass of the Star in [Msun]",
 )
-def main(mass, output):
+@click.option(
+    "--tmax",
+    default=1e9,
+    type=click.FLOAT,
+    help="Time to run the simulation in years",
+)
+def main(mass, output, tmax):
     # Calculations
     t_arr = []
     R_arr = []
@@ -156,12 +205,11 @@ def main(mass, output):
     eps_arr = []
     T_eff_arr = []
 
-    t_max = 6e8
-    with tqdm(total=t_max) as pbar:
+    with tqdm(total=tmax) as pbar:
         result = solve_ivp(
             simulation,
-            [0.1, t_max],
-            y0=[100 * mass, 1],
+            [0.1, tmax],
+            y0=[100 * mass, 0.98],
             args=[
                 mass,
                 t_arr,
@@ -175,6 +223,7 @@ def main(mass, output):
                 pbar,
             ],
             first_step=10,
+            method="RK23",
         )
     R, X = result.y
     R *= u.Rsun
